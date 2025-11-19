@@ -3,7 +3,7 @@
 ## 📝 Project Overview
 This project is developed as part of the **Development Project in Machine Learning** 
 
-The main objective is to implement a **reusable Machine Learning workflow** and apply it to two distinct binary classification datasets to compare performance and handling strategies. The project specifically focuses on addressing data quality challenges: **missing values** and **class imbalance**[cite: 109].
+The main objective is to implement a **reusable Machine Learning workflow** and apply it to two distinct binary classification datasets to compare performance and handling strategies. The project specifically focuses on addressing data quality challenges: **missing values** and **class imbalance**.
 
 ## 📂 Repository Structure
 In accordance with the project requirements, the code is organized as follows:
