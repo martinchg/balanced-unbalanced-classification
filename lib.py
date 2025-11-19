@@ -1,390 +1,296 @@
-import time
+# lib.py
+
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
 
-# Sklearn
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
-from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
+    f1_score,
+    roc_auc_score,
+    classification_report,
+)
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.utils import shuffle
 
-# PyTorch
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import TensorDataset, DataLoader
 
-# --- 1. DATA LOADING & PREPARATION ---
+# ==========================
+# 1. Chargement des données
+# ==========================
 
-def load_rice_dataset(verbose=True):
-    """
-    Charge et prépare le dataset Rice.
-    Retourne X, y et le DataFrame original.
-    """
-    from ucimlrepo import fetch_ucirepo
-    
-    if verbose: print("Fetching Rice dataset via ucimlrepo...")
-    ds = fetch_ucirepo(id=545)
-    
-    X = ds.data.features.copy().astype(np.float32)
-    y_raw = ds.data.targets.copy()
-    
-    # Encodage binaire (Cammeo=0, Osmancik=1)
-    y = np.zeros(len(y_raw))
-    # Selon le notebook, 0:1629 est une classe, le reste l'autre
-    y[1630:] = 1 
-    
-    feature_names = list(X.columns)
-    
-    if verbose:
-        print(f"Features: {feature_names}")
-        print(f"Dataset shape: {X.shape}")
-        
-    return X, y, feature_names
+def load_spam(path: str) -> pd.DataFrame:
+    """Charge le dataset SPAM de UCI."""
+    # spambase.data n'a pas d'en-têtes, la dernière colonne = label
+    df = pd.read_csv(path, header=None)
+    return df
 
-def load_covtype_dataset(subsample_ratio=0.1, random_state=42, verbose=True):
-    """
-    Charge et sous-échantillonne le dataset CovType.
-    """
-    from sklearn.datasets import fetch_covtype
-    
-    if verbose: print("Downloading CovType dataset...")
-    covtype_data = fetch_covtype()
-    X_full = covtype_data.data
-    y_full = covtype_data.target
-    
-    # Ajustement des labels pour PyTorch (1-7 -> 0-6)
-    y_full = y_full - 1 
-    
-    # Shuffle et Subsample
-    X_full, y_full = shuffle(X_full, y_full, random_state=random_state)
-    n_subsample = int(X_full.shape[0] * subsample_ratio)
-    
-    X_red = X_full[:n_subsample]
-    y_red = y_full[:n_subsample]
-    
-    if verbose:
-        print(f"Original shape: {X_full.shape}")
-        print(f"Reduced shape ({int(subsample_ratio*100)}%): {X_red.shape}")
-        
-    return X_red, y_red
 
-def get_train_val_test_loaders(X, y, batch_size=128, test_size=0.2, val_size=0.1, random_state=42):
-    """
-    Prépare les DataLoaders PyTorch avec Standardisation.
-    Gère la division Train/Val/Test.
-    """
-    # Conversion numpy si nécessaire
-    if hasattr(X, 'to_numpy'): X = X.to_numpy().astype(np.float32)
-    else: X = np.array(X, dtype=np.float32)
-    
-    y = np.array(y) # Les types seront castés en tensor plus tard
+def load_diabetes(path: str) -> pd.DataFrame:
+    """Charge le dataset Diabetes Kaggle."""
+    df = pd.read_csv(path)
+    return df
 
-    # Split 1: Séparer le Test set
-    X_temp, X_test, y_temp, y_test = train_test_split(
-        X, y, test_size=test_size, stratify=y, random_state=random_state
+
+def make_X_y_spam(df: pd.DataFrame):
+    """Sépare X, y pour SPAM (dernière colonne = cible)."""
+    X = df.iloc[:, :-1]
+    y = df.iloc[:, -1]
+    return X, y
+
+
+def make_X_y_diabetes(df: pd.DataFrame, target_col: str = "Diabetes_binary"):
+    """Sépare X, y pour Diabetes (colonne cible = Diabetes_binary)."""
+    X = df.drop(columns=[target_col])
+    y = df[target_col]
+    return X, y
+
+
+# ====================================
+# 2. Split train / test + pré-traitement
+# ====================================
+
+def train_test_split_stratified(X, y, test_size=0.2, random_state=42):
+    """Wrapper pour un split stratifié (conserve la proportion des classes)."""
+    return train_test_split(
+        X, y,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=y
     )
 
-    # Split 2: Séparer Train et Val depuis le reste
-    # Ajustement de la proportion pour que Val représente val_size du TOTAL
-    # Si test=0.1 et val=0.1 (total 0.2), il reste 0.9. Val doit être 1/9 du reste.
-    # Ici on simplifie : val_size est une proportion de X_temp
-    real_val_size = val_size / (1 - test_size)
-    
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_temp, y_temp, test_size=real_val_size, stratify=y_temp, random_state=random_state
-    )
 
-    # Standardisation (Fit sur Train uniquement)
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_val = scaler.transform(X_val)
-    X_test = scaler.transform(X_test)
-
-    # Conversion Tenseurs
-    # Classification binaire: y float pour BCEWithLogits, Multi: y long pour CrossEntropy
-    is_multiclass = len(np.unique(y)) > 2
-    dtype_y = torch.long if is_multiclass else torch.float32
-    
-    X_train_t = torch.tensor(X_train)
-    y_train_t = torch.tensor(y_train, dtype=dtype_y)
-    X_val_t = torch.tensor(X_val)
-    y_val_t = torch.tensor(y_val, dtype=dtype_y)
-    X_test_t = torch.tensor(X_test)
-    y_test_t = torch.tensor(y_test, dtype=dtype_y)
-
-    # Datasets & Loaders
-    train_ds = TensorDataset(X_train_t, y_train_t)
-    val_ds = TensorDataset(X_val_t, y_val_t)
-    test_ds = TensorDataset(X_test_t, y_test_t)
-
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
-
-    return train_loader, val_loader, test_loader, X_train.shape[1]
+def make_preprocess():
+    """Pré-traitement générique : imputation + standardisation."""
+    preprocess = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
+    ])
+    return preprocess
 
 
-# --- 2. VISUALIZATION UTILS ---
+# =====================
+# 3. Évaluation (TP)
+# =====================
 
-def plot_correlation_matrix(X, feature_names=None):
-    """Affiche la matrice de corrélation."""
-    if not isinstance(X, pd.DataFrame):
-        X = pd.DataFrame(X, columns=feature_names)
-        
-    corr = X.corr()
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(corr, annot=True, fmt=".2f", cmap='coolwarm', cbar=True)
-    plt.title("Matrice de Corrélation")
-    plt.show()
-
-def plot_scatter_classes(X, y, feat1_idx, feat2_idx, feature_names=None):
-    """Affiche un scatter plot 2D coloré par classe."""
-    if hasattr(X, 'iloc'): X = X.values
-    
-    plt.figure(figsize=(8, 6))
-    scatter = plt.scatter(X[:, feat1_idx], X[:, feat2_idx], c=y, cmap='viridis', alpha=0.6, edgecolor='k')
-    
-    xlabel = feature_names[feat1_idx] if feature_names else f"Feature {feat1_idx}"
-    ylabel = feature_names[feat2_idx] if feature_names else f"Feature {feat2_idx}"
-    
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.colorbar(scatter, label='Classe')
-    plt.title(f"{xlabel} vs {ylabel}")
-    plt.show()
-
-def plot_history(history):
-    """Trace les courbes de Loss et Accuracy pour PyTorch."""
-    epochs = history["epoch"]
-    
-    plt.figure(figsize=(15, 5))
-
-    # Loss
-    plt.subplot(1, 3, 1)
-    plt.plot(epochs, history["train_loss"], label="Train Loss")
-    plt.plot(epochs, history["val_loss"], label="Val Loss")
-    plt.xlabel("Epochs")
-    plt.ylabel("Loss")
-    plt.title("Loss")
-    plt.legend()
-    plt.grid(True)
-
-    # Accuracy
-    plt.subplot(1, 3, 2)
-    plt.plot(epochs, history["train_acc"], label="Train Acc")
-    plt.plot(epochs, history["val_acc"], label="Val Acc")
-    plt.xlabel("Epochs")
-    plt.ylabel("Accuracy (%)")
-    plt.title("Accuracy")
-    plt.legend()
-    plt.grid(True)
-    
-    # Learning Rate
-    plt.subplot(1, 3, 3)
-    plt.plot(epochs, history["lr"], label="LR", color='green')
-    plt.xlabel("Epochs")
-    plt.title("Learning Rate")
-    plt.grid(True)
-
-    plt.tight_layout()
-    plt.show()
+def eval_clf(y_true, y_pred, labels=None):
+    """Fonction d’éval copiée du TP (accuracy + matrice de confusion)."""
+    acc = accuracy_score(y_true, y_pred)
+    print(f"Accuracy = {acc:.4f}")
+    cm = confusion_matrix(y_true, y_pred)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
+    disp.plot()
 
 
-# --- 3. SKLEARN MODELS & EVALUATION ---
-
-def train_eval_sklearn(model_name, model_instance, X_train, y_train, X_test, y_test, use_scaler=True):
-    """
-    Entraîne et évalue un modèle sklearn (avec ou sans scaler).
-    """
-    steps = []
-    if use_scaler:
-        steps.append(('scaler', StandardScaler()))
-    steps.append(('model', model_instance))
-    
-    pipe = Pipeline(steps)
-    
-    start = time.time()
-    pipe.fit(X_train, y_train)
-    y_pred = pipe.predict(X_test)
-    end = time.time()
-    
-    acc = accuracy_score(y_test, y_pred)
-    print(f"--- {model_name} ---")
-    print(f"Accuracy: {acc:.4f}")
-    print(f"Temps d'exécution: {end - start:.4f}s")
-    print("Confusion Matrix:")
-    print(confusion_matrix(y_test, y_pred))
-    
-    return pipe, acc
-
-def feature_importance_permutation(pipe, X, y, feature_names, n_repeats=20, groups=None, random_state=42):
-    """
-    Calcule l'importance des features par permutation (individuelle ou par groupe).
-    """
-    if hasattr(X, 'to_numpy'): X = X.to_numpy()
-    
-    base_preds = pipe.predict(X)
-    base_acc = accuracy_score(y, base_preds)
-    
-    importances = []
-    names = []
-    rng = np.random.default_rng(random_state)
-    
-    # Si pas de groupes, on fait par feature individuelle
-    if groups is None:
-        iteration_list = [[i] for i in range(X.shape[1])]
-        names_list = feature_names
+def compute_metrics(y_true, y_pred, y_proba=None):
+    """Renvoie un dict de métriques utiles (accuracy, f1, roc_auc...)."""
+    metrics = {
+        "accuracy": accuracy_score(y_true, y_pred),
+        "f1": f1_score(y_true, y_pred),
+    }
+    if y_proba is not None:
+        metrics["roc_auc"] = roc_auc_score(y_true, y_proba)
     else:
-        iteration_list = groups
-        # Génération de noms pour les groupes si non fournis
-        names_list = [f"Group {i}" for i in range(len(groups))]
-
-    for i, indices in enumerate(iteration_list):
-        scores_shuffled = []
-        for _ in range(n_repeats):
-            X_temp = X.copy()
-            # Permutation globale appliquée à toutes les colonnes du groupe simultanément
-            perm_idx = rng.permutation(X.shape[0])
-            
-            # Important : on applique la MEME permutation aux colonnes corrélées
-            # X_temp[:, indices] = X_temp[perm_idx][:, indices] ne marche pas directement en numpy pur pour le slicing avancé
-            # On doit le faire proprement :
-            subset = X_temp[:, indices]
-            X_temp[:, indices] = subset[perm_idx]
-            
-            shuffled_preds = pipe.predict(X_temp)
-            scores_shuffled.append(accuracy_score(y, shuffled_preds))
-        
-        mean_drop = base_acc - np.mean(scores_shuffled)
-        importances.append(mean_drop)
-        names.append(names_list[i])
-        
-    # Plot
-    plt.figure(figsize=(10, 6))
-    plt.barh(names, importances, color='orange')
-    plt.xlabel("Baisse de précision moyenne")
-    plt.title("Feature Importance (Permutation)")
-    plt.gca().invert_yaxis()
-    plt.show()
-    
-    return importances
+        metrics["roc_auc"] = None
+    return metrics
 
 
-# --- 4. PYTORCH DEEP LEARNING ---
+# ==========================================
+# 4. Modèles de base (inspirés du TP)
+# ==========================================
 
-class GenericMLP(nn.Module):
+def build_knn_pipeline(n_neighbors=5):
+    return Pipeline([
+        ("preprocess", make_preprocess()),
+        ("clf", KNeighborsClassifier(n_neighbors=n_neighbors)),
+    ])
+
+
+def build_logreg_pipeline(class_weight=None):
+    return Pipeline([
+        ("preprocess", make_preprocess()),
+        ("clf", LogisticRegression(max_iter=1000, class_weight=class_weight)),
+    ])
+
+
+def build_rf_pipeline(
+    n_estimators=200,
+    max_depth=None,
+    class_weight=None,
+    random_state=42,
+):
+    return Pipeline([
+        ("preprocess", make_preprocess()),
+        ("clf", RandomForestClassifier(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            class_weight=class_weight,
+            random_state=random_state,
+            n_jobs=-1,
+        )),
+    ])
+
+
+# ===================================
+# 5. Choice of hyperparameters (TP-style)
+# ===================================
+
+def cv_knn_choose_k(X_train, y_train, K_max=20, n_splits=5, random_state=42):
+    """Cherche le meilleur K comme dans le TP, avec StratifiedKFold."""
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    accs = np.zeros((K_max, n_splits))
+
+    for k in range(1, K_max + 1):
+        pipe = build_knn_pipeline(n_neighbors=k)
+        scores = cross_val_score(pipe, X_train, y_train, cv=cv, scoring="accuracy")
+        accs[k-1, :] = scores
+        print(f"K = {k:2d}: acc = {scores.mean():.4f} ± {scores.std():.4f}")
+
+    # on retourne le meilleur K + le tableau complet pour tracer dans le notebook
+    best_k = np.argmax(accs.mean(axis=1)) + 1
+    return best_k, accs
+
+
+def cv_rf_choose_max_depth(X_train, y_train, depths=(5, 10, 20, 40, None), n_splits=5, random_state=42, class_weight=None):
+    """Calque l'idée du TP: scanner max_depth et garder le meilleur."""
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    results = {}
+
+    for d in depths:
+        pipe = build_rf_pipeline(max_depth=d, class_weight=class_weight)
+        scores = cross_val_score(pipe, X_train, y_train, cv=cv, scoring="accuracy")
+        results[d] = scores
+        print(f"max_depth = {d}: acc = {scores.mean():.4f} ± {scores.std():.4f}")
+
+    # profondeur avec la meilleure moyenne
+    best_depth = max(results, key=lambda d: results[d].mean())
+    return best_depth, results
+
+
+# =============================================
+# 6. Permutation importance (copié du TP)
+# =============================================
+
+def permutation_importance(pipe, X, y, n_repeats=20, random_state=None, return_sorted=True):
     """
-    MLP générique pour binaire ou multiclasse.
+    Importance par permutation (inspirée du TP).
+    - pipe : modèle déjà entraîné avec .predict(X)
+    - X : numpy array (n_samples, n_features)
+    - y : labels
     """
-    def __init__(self, input_dim, output_dim, hidden_dims=[64, 32], dropout_rate=0.2):
-        super(GenericMLP, self).__init__()
-        layers = []
-        
-        # Couches cachées
-        prev_dim = input_dim
-        for h_dim in hidden_dims:
-            layers.append(nn.Linear(prev_dim, h_dim))
-            layers.append(nn.BatchNorm1d(h_dim)) # BatchNorm pour stabilité
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout_rate))
-            prev_dim = h_dim
-            
-        # Couche de sortie
-        layers.append(nn.Linear(prev_dim, output_dim))
-        
-        self.network = nn.Sequential(*layers)
-        
-    def forward(self, x):
-        return self.network(x)
+    rng = np.random.default_rng(random_state)
+    X = np.asarray(X)
+    y = np.asarray(y)
 
-def train_torch_model(model, train_loader, val_loader, criterion, optimizer, scheduler=None, epochs=20, device='cpu', print_every=5):
-    """
-    Boucle d'entraînement PyTorch générique.
-    """
-    model.to(device)
-    history = {"epoch": [], "train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "lr": []}
-    
-    is_binary = isinstance(criterion, nn.BCEWithLogitsLoss)
+    n_samples, n_features = X.shape
+    base_pred = np.ravel(pipe.predict(X))
+    base_accuracy = float(np.mean(base_pred == y))
 
-    for epoch in range(1, epochs + 1):
-        # --- Training ---
-        model.train()
-        train_loss, train_correct, train_total = 0.0, 0, 0
-        
-        for Xb, yb in train_loader:
-            Xb, yb = Xb.to(device), yb.to(device)
-            
-            optimizer.zero_grad()
-            outputs = model(Xb)
-            
-            # Gestion dimension pour binaire
-            if is_binary: outputs = outputs.squeeze()
-            
-            loss = criterion(outputs, yb)
-            loss.backward()
-            optimizer.step()
-            
-            train_loss += loss.item() * Xb.size(0)
-            
-            # Calcul Accuracy
-            if is_binary:
-                preds = (torch.sigmoid(outputs) >= 0.5).float()
-            else:
-                preds = torch.argmax(outputs, dim=1)
-                
-            train_correct += (preds == yb).sum().item()
-            train_total += Xb.size(0)
-            
-        # --- Validation ---
-        model.eval()
-        val_loss, val_correct, val_total = 0.0, 0, 0
-        
-        with torch.no_grad():
-            for Xv, yv in val_loader:
-                Xv, yv = Xv.to(device), yv.to(device)
-                out_v = model(Xv)
-                
-                if is_binary: out_v = out_v.squeeze()
-                
-                l_v = criterion(out_v, yv)
-                val_loss += l_v.item() * Xv.size(0)
-                
-                if is_binary:
-                    preds_v = (torch.sigmoid(out_v) >= 0.5).float()
-                else:
-                    preds_v = torch.argmax(out_v, dim=1)
-                
-                val_correct += (preds_v == yv).sum().item()
-                val_total += Xv.size(0)
-        
-        # --- Metrics & Scheduler ---
-        avg_train_loss = train_loss / train_total
-        avg_val_loss = val_loss / val_total
-        train_acc = 100 * train_correct / train_total
-        val_acc = 100 * val_correct / val_total
-        
-        if scheduler:
-            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-                scheduler.step(avg_val_loss)
-            else:
-                scheduler.step()
-        
-        # Logging
-        history["epoch"].append(epoch)
-        history["train_loss"].append(avg_train_loss)
-        history["train_acc"].append(train_acc)
-        history["val_loss"].append(avg_val_loss)
-        history["val_acc"].append(val_acc)
-        history["lr"].append(optimizer.param_groups[0]["lr"])
-        
-        if epoch % print_every == 0 or epoch == 1:
-            print(f"Epoch {epoch:3d} | Loss: {avg_train_loss:.4f} | Val Acc: {val_acc:.2f}%")
-            
-    return history
+    importance_means = np.zeros(n_features, dtype=float)
+    importance_stds = np.zeros(n_features, dtype=float)
+
+    for j in range(n_features):
+        accs = np.empty(n_repeats, dtype=float)
+        for r in range(n_repeats):
+            X_perm = X.copy()
+            perm_idx = rng.permutation(n_samples)
+            X_perm[:, j] = X_perm[perm_idx, j]
+            pred_perm = np.ravel(pipe.predict(X_perm))
+            accs[r] = float(np.mean(pred_perm == y))
+        importance_means[j] = base_accuracy - accs.mean()
+        importance_stds[j] = accs.std(ddof=0)
+
+    result = {
+        "feature_idx": np.arange(n_features),
+        "base_accuracy": base_accuracy,
+        "importance_mean": importance_means,
+        "importance_std": importance_stds,
+    }
+
+    if return_sorted:
+        order = np.argsort(result["importance_mean"])[::-1]
+        for k in ["feature_idx", "importance_mean", "importance_std"]:
+            result[k] = result[k][order]
+
+    return result
+
+
+# ==========================================
+# 7. Workflows "haut niveau" pour les notebooks
+# ==========================================
+
+def workflow_spam(path_data: str):
+    """Workflow complet pour le dataset SPAM (dataset plutôt équilibré)."""
+    df = load_spam(path_data)
+    X, y = make_X_y_spam(df)
+    X_train, X_test, y_train, y_test = train_test_split_stratified(X, y)
+
+    # 1) LogReg baseline
+    log_pipe = build_logreg_pipeline(class_weight=None)
+    log_pipe.fit(X_train, y_train)
+    y_pred_log = log_pipe.predict(X_test)
+    y_proba_log = log_pipe.predict_proba(X_test)[:, 1]
+    metrics_log = compute_metrics(y_test, y_pred_log, y_proba_log)
+
+    # 2) KNN avec choix du meilleur K via CV
+    best_k, accs = cv_knn_choose_k(X_train, y_train, K_max=20)
+    knn_pipe = build_knn_pipeline(n_neighbors=best_k)
+    knn_pipe.fit(X_train, y_train)
+    y_pred_knn = knn_pipe.predict(X_test)
+    metrics_knn = compute_metrics(y_test, y_pred_knn)
+
+    # 3) Random Forest
+    best_depth, rf_results = cv_rf_choose_max_depth(X_train, y_train, class_weight=None)
+    rf_pipe = build_rf_pipeline(max_depth=best_depth, class_weight=None)
+    rf_pipe.fit(X_train, y_train)
+    y_pred_rf = rf_pipe.predict(X_test)
+    y_proba_rf = rf_pipe.predict_proba(X_test)[:, 1]
+    metrics_rf = compute_metrics(y_test, y_pred_rf, y_proba_rf)
+
+    return {
+        "logreg": metrics_log,
+        "knn": metrics_knn,
+        "rf": metrics_rf,
+        "best_k": best_k,
+        "best_depth": best_depth,
+    }
+
+
+def workflow_diabetes(path_data: str, target_col: str = "Diabetes_binary"):
+    """Workflow complet pour le dataset Diabetes (dataset très déséquilibré)."""
+    df = load_diabetes(path_data)
+    X, y = make_X_y_diabetes(df, target_col)
+    X_train, X_test, y_train, y_test = train_test_split_stratified(X, y)
+
+    # On gère le déséquilibre avec class_weight="balanced"
+    class_weight = "balanced"
+
+    # 1) LogReg
+    log_pipe = build_logreg_pipeline(class_weight=class_weight)
+    log_pipe.fit(X_train, y_train)
+    y_pred_log = log_pipe.predict(X_test)
+    y_proba_log = log_pipe.predict_proba(X_test)[:, 1]
+    metrics_log = compute_metrics(y_test, y_pred_log, y_proba_log)
+
+    # 2) Random Forest
+    best_depth, rf_results = cv_rf_choose_max_depth(
+        X_train, y_train,
+        class_weight=class_weight
+    )
+    rf_pipe = build_rf_pipeline(max_depth=best_depth, class_weight=class_weight)
+    rf_pipe.fit(X_train, y_train)
+    y_pred_rf = rf_pipe.predict(X_test)
+    y_proba_rf = rf_pipe.predict_proba(X_test)[:, 1]
+    metrics_rf = compute_metrics(y_test, y_pred_rf, y_proba_rf)
+
+    # Ici dans le notebook tu pourras aussi regarder recall de la classe 1, etc.
+    return {
+        "logreg": metrics_log,
+        "rf": metrics_rf,
+        "best_depth": best_depth,
+    }
