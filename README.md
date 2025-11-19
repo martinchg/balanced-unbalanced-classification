@@ -1,14 +1,14 @@
 # Balanced vs. Unbalanced Classification
 
-## 📝 Project Overview
+## Project Overview
 This project is developed as part of the **Development Project in Machine Learning** 
 
 The main objective is to implement a **reusable Machine Learning workflow** and apply it to two distinct binary classification datasets to compare performance and handling strategies. The project specifically focuses on addressing data quality challenges: **missing values** and **class imbalance**.
 
-## 📂 Repository Structure
+## Repository Structure
 In accordance with the project requirements, the code is organized as follows:
 
-## 📊 Datasets
+## Datasets
 
 ### 1. SPAM Dataset (UCI)
 * **Source:** [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/94/spambase) 
@@ -21,10 +21,10 @@ In accordance with the project requirements, the code is organized as follows:
 * **Source:** [Kaggle Dataset](https://www.kaggle.com/datasets/alexteboul/diabetes-health-indicators-dataset) 
 * **Task:** Predict diabetes presence based on health indicators.
 * **Characteristics:** 250,000 entries, 21 features.
-* **Specific Challenge:** Very large dataset with **class imbalance**[cite: 96].
+* **Specific Challenge:** Very large dataset with **class imbalance**.
 * **Balance:** Unbalanced dataset.
 
-## ⚙️ Machine Learning Workflow
+## Machine Learning Workflow
 The core logic is implemented in `lib.py` and follows this pipeline:
 
 1.  **Import:** Loading datasets from CSV/Excel files.
@@ -35,7 +35,7 @@ The core logic is implemented in `lib.py` and follows this pipeline:
 4.  **Training:** Model training with Feature Selection.
 5.  **Validation:** Evaluation using metrics adapted to each problem (e.g., Accuracy, F1-Score, ROC-AUC).
 
-## 🚀 Usage
+## Usage
 
 ### 1. Prerequisites
 Install the required libraries:
@@ -56,6 +56,9 @@ To validate the reliability of the functions in lib.py, run the unit tests:
 ## Contributors
 
 CHASSAING Martin 
+
 ROUBERTOU Amaury
+
 GARRANA Simon 
+
 LESAGE Thomas
